@@ -1,195 +1,313 @@
 pipeline {
-
     agent none
-
-    environment {
-        AWS_REGION = 'ap-south-1'
-        ECR_REPO = 'cicd-app'
-        IMAGE_TAG = "${BUILD_NUMBER}"
-    }
 
     stages {
 
-        stage('Checkout') {
-
-            agent {
-                label 'docker-agent'
-            }
-
-            steps {
-                checkout scm
-            }
-        }
-
-        stage('Parallel Testing') {
+        // =====================================================
+        // 1. PARALLEL BUILD AND DOCKER CHECK
+        // =====================================================
+        stage('Parallel Build and Docker') {
 
             parallel {
 
-                stage('Unit Test') {
+                // =================================================
+                // AGENT 1 - BUILD / TEST
+                // =================================================
+                stage('Agent 1 - Build and Test') {
 
                     agent {
-                        label 'docker-agent'
+                        label 'linux'
                     }
 
                     steps {
-                        echo 'Running Unit Tests...'
+
+                        echo '===== AGENT 1 STARTED ====='
+
+                        git branch: 'main',
+                            url: 'https://github.com/coss-stack/cicd-parallel-project.git'
 
                         sh '''
-                            echo "Unit tests started"
-                            sleep 5
-                            echo "Unit tests completed"
+                            echo "Running on Agent 1"
+                            echo "Hostname:"
+                            hostname
+
+                            echo "Current directory:"
+                            pwd
+
+                            echo "Project files:"
+                            ls -la
+
+                            echo "App files:"
+                            ls -la app
+
+                            echo "Checking HTML file:"
+                            cat app/index.html
+
+                            echo "Build/Test completed successfully"
                         '''
                     }
                 }
 
-                stage('Code Quality') {
+
+                // =================================================
+                // AGENT 2 - DOCKER
+                // =================================================
+                stage('Agent 2 - Docker') {
 
                     agent {
-                        label 'scan-agent'
+                        label 'docker'
                     }
 
                     steps {
-                        echo 'Running Code Quality Check...'
+
+                        echo '===== AGENT 2 STARTED ====='
+
+                        git branch: 'main',
+                            url: 'https://github.com/coss-stack/cicd-parallel-project.git'
 
                         sh '''
-                            echo "Code quality analysis started"
-                            sleep 5
-                            echo "Code quality analysis completed"
-                        '''
-                    }
-                }
+                            echo "Running on Agent 2"
+                            echo "Hostname:"
+                            hostname
 
-                stage('Security Scan') {
+                            echo "Current directory:"
+                            pwd
 
-                    agent {
-                        label 'scan-agent'
-                    }
+                            echo "Project files:"
+                            ls -la
 
-                    steps {
-                        echo 'Running Security Scan...'
+                            echo "App files:"
+                            ls -la app
 
-                        sh '''
-                            echo "Security scan started"
-                            sleep 5
-                            echo "Security scan completed"
+                            echo "Docker version:"
+                            docker --version
+
+                            echo "Building Docker image..."
+
+                            docker build \
+                                -t cicd-app:${BUILD_NUMBER} \
+                                ./app
+
+                            echo "Docker images:"
+                            docker images
                         '''
                     }
                 }
             }
         }
 
-        stage('Docker Build') {
+
+        // =====================================================
+        // 2. DOCKER IMAGE
+        // =====================================================
+        stage('Docker Image Verification') {
 
             agent {
-                label 'docker-agent'
+                label 'docker'
             }
 
             steps {
 
+                echo '===== DOCKER IMAGE VERIFICATION ====='
+
                 sh '''
-                    docker build \
-                    -t $ECR_REPO:$IMAGE_TAG \
-                    ./app
+                    echo "Docker images available:"
+                    docker images
+
+                    echo "Checking image:"
+                    docker image inspect cicd-app:${BUILD_NUMBER}
+
+                    echo "Docker image created successfully"
                 '''
             }
         }
 
-        stage('Login to ECR') {
+
+        // =====================================================
+        // 3. ECR LOGIN
+        // =====================================================
+        stage('ECR Login') {
 
             agent {
-                label 'docker-agent'
+                label 'docker'
             }
 
             steps {
 
                 sh '''
+                    echo "===== ECR LOGIN ====="
+
+                    aws --version
+
                     aws ecr get-login-password \
-                    --region $AWS_REGION | \
+                    --region ap-south-1 | \
                     docker login \
                     --username AWS \
                     --password-stdin \
-                    $(aws sts get-caller-identity \
-                    --query Account \
-                    --output text).dkr.ecr.$AWS_REGION.amazonaws.com
+                    726392379799.dkr.ecr.ap-south-1.amazonaws.com
+
+                    echo "ECR login successful"
                 '''
             }
         }
 
-        stage('Push Docker Image') {
+
+        // =====================================================
+        // 4. TAG DOCKER IMAGE
+        // =====================================================
+        stage('Tag Docker Image') {
 
             agent {
-                label 'docker-agent'
+                label 'docker'
             }
 
             steps {
 
                 sh '''
-                    ACCOUNT_ID=$(aws sts get-caller-identity \
-                    --query Account \
-                    --output text)
-
-                    ECR_URL=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+                    echo "===== TAGGING DOCKER IMAGE ====="
 
                     docker tag \
-                    $ECR_REPO:$IMAGE_TAG \
-                    $ECR_URL/$ECR_REPO:$IMAGE_TAG
+                    cicd-app:${BUILD_NUMBER} \
+                    726392379799.dkr.ecr.ap-south-1.amazonaws.com/cicd-app:${BUILD_NUMBER}
+
+                    echo "Image tagged successfully"
+
+                    docker images
+                '''
+            }
+        }
+
+
+        // =====================================================
+        // 5. PUSH IMAGE TO ECR
+        // =====================================================
+        stage('Push Image to ECR') {
+
+            agent {
+                label 'docker'
+            }
+
+            steps {
+
+                sh '''
+                    echo "===== PUSHING IMAGE TO ECR ====="
 
                     docker push \
-                    $ECR_URL/$ECR_REPO:$IMAGE_TAG
+                    726392379799.dkr.ecr.ap-south-1.amazonaws.com/cicd-app:${BUILD_NUMBER}
+
+                    echo "Image pushed to ECR successfully"
                 '''
             }
         }
 
-        stage('Deploy to Kubernetes') {
+
+        // =====================================================
+        // 6. VERIFY ECR
+        // =====================================================
+        stage('Verify ECR Image') {
 
             agent {
-                label 'docker-agent'
+                label 'docker'
             }
 
             steps {
 
                 sh '''
-                    ACCOUNT_ID=$(aws sts get-caller-identity \
-                    --query Account \
-                    --output text)
+                    echo "===== VERIFYING ECR ====="
 
-                    ECR_URL=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+                    aws ecr describe-images \
+                    --repository-name cicd-app \
+                    --region ap-south-1
 
-                    sed "s|IMAGE_PLACEHOLDER|$ECR_URL/$ECR_REPO:$IMAGE_TAG|g" \
-                    k8s/deployment.yaml > deployment-final.yaml
+                    echo "ECR verification completed"
+                '''
+            }
+        }
 
-                    kubectl apply -f deployment-final.yaml
+
+        // =====================================================
+        // 7. DEPLOY TO EKS
+        // =====================================================
+        stage('Deploy to EKS') {
+
+            agent {
+                label 'docker'
+            }
+
+            steps {
+
+                echo '===== EKS DEPLOYMENT ====='
+
+                git branch: 'main',
+                    url: 'https://github.com/coss-stack/cicd-parallel-project.git'
+
+                sh '''
+                    echo "Checking Kubernetes files:"
+                    ls -la k8s
+
+                    echo "Updating image in Kubernetes deployment..."
+
+                    sed -i \
+                    "s|image:.*|image: 726392379799.dkr.ecr.ap-south-1.amazonaws.com/cicd-app:${BUILD_NUMBER}|" \
+                    k8s/deployment.yaml
+
+                    echo "Updated deployment file:"
+                    cat k8s/deployment.yaml
+
+                    echo "Getting EKS credentials..."
+
+                    aws eks update-kubeconfig \
+                    --region ap-south-1 \
+                    --name devops-cluster
+
+                    echo "Checking Kubernetes cluster..."
+
+                    kubectl get nodes
+
+                    echo "Applying deployment..."
+
+                    kubectl apply -f k8s/deployment.yaml
+
+                    echo "Applying service..."
 
                     kubectl apply -f k8s/service.yaml
-                '''
-            }
-        }
 
-        stage('Verify Deployment') {
+                    echo "Checking pods..."
 
-            agent {
-                label 'docker-agent'
-            }
-
-            steps {
-
-                sh '''
-                    kubectl get deployments
                     kubectl get pods
-                    kubectl get services
+
+                    echo "Checking service..."
+
+                    kubectl get svc
+
+                    echo "EKS deployment completed successfully"
                 '''
             }
         }
     }
 
+
+    // =========================================================
+    // POST ACTIONS
+    // =========================================================
     post {
 
         success {
-            echo 'CI/CD Pipeline completed successfully!'
+            echo '========================================'
+            echo 'CI/CD PIPELINE SUCCESSFUL'
+            echo '========================================'
+            echo 'Application deployed successfully'
         }
 
         failure {
-            echo 'CI/CD Pipeline failed!'
+            echo '========================================'
+            echo 'CI/CD PIPELINE FAILED'
+            echo '========================================'
+            echo 'Check the Jenkins console logs'
+        }
+
+        always {
+            echo 'Pipeline execution completed'
         }
     }
 }
